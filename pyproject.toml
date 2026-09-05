@@ -1,0 +1,31 @@
+[project]
+name = "rag-system"
+version = "0.1.0"
+description = "A retrieval (and optional generation) system over Qdrant, with a Telegram front-end and a reusable core."
+requires-python = ">=3.11"
+dependencies = [
+    "qdrant-client>=1.9",
+    "sentence-transformers>=3.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "aiogram>=3.4",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

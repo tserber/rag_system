@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# rag_system project-specific
+.qdrant_storage/
+.ollama_data/
+data/*
+!data/.gitkeep

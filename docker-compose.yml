@@ -1,0 +1,27 @@
+version: "3.8"
+
+# Local-first stack. Bring up what you need:
+#   docker compose up qdrant           # just the vector DB
+#   docker compose up qdrant ollama    # + local generation
+#
+# The bot/API themselves are NOT containerized here on purpose while you're
+# actively developing them — run them with your local Python for faster
+# iteration (see README). Containerize them later if this moves to AWS.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST/gRPC API
+      - "6334:6334"   # gRPC
+    volumes:
+      - ./.qdrant_storage:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./.ollama_data:/root/.ollama
+    profiles:
+      - generation   # only started when GENERATION_MODE=ollama; `docker compose --profile generation up`
