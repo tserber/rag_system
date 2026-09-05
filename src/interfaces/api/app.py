@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from rag_core import RagPipeline
@@ -67,8 +67,12 @@ class HealthResponse(BaseModel):
 
 
 @app.get("/health", response_model=HealthResponse)
-def health():
+def health(response: Response):
     report = check_health(get_settings())
+    if not report.all_ok:
+        # 503 so load balancers / uptime checks / `curl -f` see this as down,
+        # not just a 200 with a buried "ok": false in the body.
+        response.status_code = 503
     return HealthResponse(
         ok=report.all_ok,
         services=[ServiceStatusOut(name=s.name, ok=s.ok, detail=s.detail) for s in report.services],
