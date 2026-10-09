@@ -15,9 +15,15 @@ not-yet-built, deployment target.
 ```
 src/
   rag_core/          <- retrieval + generation engine. Framework-agnostic.
+    live/            <- audio-stream -> questions (vad_segmenter) and
+                        questions -> speculative answers (question_matcher).
+                        Still framework-agnostic: no microphone import here.
   interfaces/
     telegram_bot/    <- imports rag_core. Telegram-specific.
     api/             <- imports rag_core. FastAPI-specific.
+    live_listener/   <- imports rag_core (incl. rag_core.live). Owns the
+                        microphone (sounddevice), same way telegram_bot owns
+                        aiogram and api owns FastAPI.
 ```
 
 `rag_core` must never import `aiogram`, `fastapi`, `django`, or anything else
@@ -46,10 +52,34 @@ rag_core.RagPipeline.query(text)
       |        +--> Embedder (SentenceTransformersEmbedder, local, free)
       |        +--> VectorStore (QdrantVectorStore: local Docker or Qdrant Cloud, config-switched)
       |
+      (at ingest time, not query time: Transcriber (FasterWhisperTranscriber,
+       local, free) turns audio files into text before it reaches Embedder --
+       see rag_core/ingest.py and rag_core/transcription.py)
+      |
       +--> Generator (NullGenerator: retrieval-only, or OllamaGenerator: local LLM)
       |
       v
 RagResponse(query, chunks, answer)
+```
+
+`interfaces/live_listener` is a separate, parallel caller of this same
+pipeline, not a new path through it:
+
+```
+microphone audio
+      |
+      v
+rag_core.live.VadSegmenter          (turns a raw audio stream into utterances)
+      |
+      v
+FasterWhisperTranscriber.transcribe_array()   (same transcriber as file ingestion)
+      |
+      v
+rag_core.live.QuestionMatcher       (fires RagPipeline.query() on partial text,
+      |                              surfaces an early answer once stable,
+      |                              flags same-theme follow-up questions)
+      v
+LiveAnswer(question_text, response, is_same_theme_as_previous)
 ```
 
 Every piece above is a `Protocol`-typed interface with one real implementation
@@ -81,6 +111,7 @@ docker compose --profile generation up ollama  # only if GENERATION_MODE=ollama
 python -m rag_core.ingest ./data               # index documents from data/
 python -m interfaces.telegram_bot.main         # run the bot (needs TELEGRAM_BOT_TOKEN)
 uvicorn interfaces.api.app:app --reload        # run the FastAPI demo instead/also
+python -m interfaces.live_listener.main        # live mic listening (needs pip install -e ".[live]")
 
 pytest                                         # all tests run offline against fakes
 ```
@@ -99,8 +130,25 @@ pytest                                         # all tests run offline against f
 
 ## Current status / known gaps
 
-- No document-source metadata beyond filename; if you add PDF/HTML ingestion,
+- Document-source metadata is filename + `sphere`/`technology`/`kind`
+  (`kind` is `"text"` for a plain file, `"audio_transcript"` for a
+  transcribed one). If you add PDF/HTML ingestion, follow the same pattern:
   extend the payload in `ingest.py`, not the retriever.
+- Audio ingestion (`rag_core/transcription.py`, wired into `ingest.py`) needs
+  the optional `faster-whisper` dependency (`pip install -e ".[audio]"`) and
+  is CPU-only by default; it is not installed as part of the base package so
+  machines that never ingest audio don't pay for it.
+- Live listening (`rag_core/live/`, `interfaces/live_listener/`) needs the
+  optional `[live]` extra (`[audio]` plus `sounddevice`). Voice-activity
+  detection is a simple RMS-energy threshold, not a trained VAD model --
+  deliberate for v1 (KISS); swapping in webrtcvad/silero-vad later is a
+  one-file change to `rag_core/live/vad_segmenter.py`, nothing else in the
+  live path needs to know. There's also no two-tier fast/accurate model
+  split for partial vs. final transcription yet -- one model (whichever
+  `WHISPER_MODEL_SIZE` is configured) handles both; if partial-decode
+  latency ever becomes the bottleneck, a smaller dedicated "draft" model for
+  `transcribe_array()` calls during on_partial() is the documented upgrade
+  path, not something to build preemptively.
 - No auth on the FastAPI demo endpoint; it's a proof that `rag_core` is
   reusable outside Telegram, not a production API.
 - AWS deployment is intentionally not built yet (see README's "Local vs AWS"

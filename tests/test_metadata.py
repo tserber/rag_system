@@ -50,4 +50,20 @@ def test_chunk_metadata_to_payload_round_trips():
         "chunk_index": 0,
         "sphere": "databases",
         "technology": "postgresql",
+        "kind": "text",
     }
+
+
+def test_chunk_metadata_defaults_kind_to_text():
+    metadata = ChunkMetadata(text="hello", source="notes.md", chunk_index=0)
+    assert metadata.kind == "text"
+
+
+def test_chunk_metadata_accepts_audio_transcript_kind():
+    metadata = ChunkMetadata(
+        text="hello from an interview",
+        source="interviews/call.mp3",
+        chunk_index=0,
+        kind="audio_transcript",
+    )
+    assert metadata.to_payload()["kind"] == "audio_transcript"

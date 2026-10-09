@@ -20,3 +20,8 @@ class EmbeddingError(RagCoreError):
 
 class GenerationUnavailableError(RagCoreError):
     """Ollama (or another generation backend) could not be reached or failed."""
+
+
+class TranscriptionError(RagCoreError):
+    """An audio file could not be transcribed (missing dependency, unreadable
+    file, unsupported format, or the speech-to-text model failed)."""

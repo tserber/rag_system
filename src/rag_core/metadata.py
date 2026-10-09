@@ -5,6 +5,10 @@ Every chunk gets, on top of its source file and chunk index:
 - `sphere`: the broad domain, e.g. "databases", "backend", "networking".
 - `technology`: the specific thing within that domain, e.g. "postgresql",
   "mongodb", "sql", "redis".
+- `kind`: how the text was produced -- "text" for a .txt/.md file read
+  directly, "audio_transcript" for text produced by transcribing an audio
+  file (see rag_core.transcription). Lets you tell retrieved chunks apart at
+  a glance, and filter by it later if that becomes useful.
 
 This is what makes filtered retrieval possible ("only show me Postgres
 chunks", "only databases, not networking") without redesigning storage
@@ -33,6 +37,7 @@ class ChunkMetadata(BaseModel):
     chunk_index: int
     sphere: str | None = None
     technology: str | None = None
+    kind: str = "text"
 
     def to_payload(self) -> dict:
         return self.model_dump()

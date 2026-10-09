@@ -12,12 +12,30 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "requests>=2.31",
+    # rag_core.live (VadSegmenter) imports numpy unconditionally, unlike
+    # faster-whisper/sounddevice which stay lazy-imported and optional.
+    # Already pulled in transitively by sentence-transformers, but declared
+    # explicitly since rag_core now has a direct hard dependency on it.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
+]
+# Needed only to ingest audio files (rag_core.transcription). Bundles its own
+# audio decoder (PyAV), so no system ffmpeg install is required.
+audio = [
+    "faster-whisper>=1.0",
+]
+# Needed only for live microphone listening (interfaces/live_listener).
+# Builds on [audio] -- same transcriber, just fed from a mic instead of a
+# file -- plus sounddevice for the actual audio capture (numpy is already a
+# base dependency, see above).
+live = [
+    "rag-system[audio]",
+    "sounddevice>=0.4",
 ]
 
 [tool.setuptools.packages.find]

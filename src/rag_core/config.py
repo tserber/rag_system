@@ -60,6 +60,22 @@ class Settings(BaseSettings):
     # --- Telegram (read by interfaces/telegram_bot, not by rag_core itself) ---
     telegram_bot_token: str | None = Field(default=None)
 
+    # --- Audio transcription (optional; needs `pip install -e ".[audio]"`) ---
+    # Model size trades accuracy for speed/CPU cost: tiny < base < small <
+    # medium < large-v3. "small" is a good default for CPU-only machines.
+    whisper_model_size: str = "small"
+    whisper_device: str = "cpu"
+    # int8 keeps CPU inference fast and memory-light with a small accuracy
+    # cost versus float32; switch to "float16" if running on a GPU.
+    whisper_compute_type: str = "int8"
+
+    # --- Live listening (optional; needs `pip install -e ".[live]"`) ---
+    # How long a pause ends a question, and how many consecutive partial
+    # transcripts must agree before showing an early (pre-confirmation)
+    # answer. See rag_core/live/ and interfaces/live_listener.
+    live_silence_ms: int = 600
+    live_stability_streak: int = 2
+
 
 def get_settings() -> Settings:
     """Load settings fresh from the environment/.env file.
