@@ -134,6 +134,14 @@ pytest                                         # all tests run offline against f
   (`kind` is `"text"` for a plain file, `"audio_transcript"` for a
   transcribed one). If you add PDF/HTML ingestion, follow the same pattern:
   extend the payload in `ingest.py`, not the retriever.
+- Ingestion is idempotent: each chunk's Qdrant point ID is `uuid5(fixed
+  namespace, f"{source}::{chunk_index}")`, not random, so re-running
+  `ingest_folder` on a folder you've already indexed updates existing
+  points in place instead of duplicating them (see `_stable_chunk_id` in
+  `ingest.py`). One known gap: if editing a file *shrinks* its chunk count,
+  the now-unreferenced higher-index chunks from the previous run are
+  orphaned in Qdrant rather than deleted -- no reconciliation pass exists
+  yet; rebuilding the collection is the current workaround.
 - Audio ingestion (`rag_core/transcription.py`, wired into `ingest.py`) needs
   the optional `faster-whisper` dependency (`pip install -e ".[audio]"`) and
   is CPU-only by default; it is not installed as part of the base package so

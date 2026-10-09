@@ -10,6 +10,18 @@ rag_core.metadata. Audio files (see rag_core.transcription.AUDIO_EXTENSIONS)
 are transcribed to text before chunking; everything downstream of that
 (chunking, embedding, metadata, upsert) is identical for text and audio
 sources, they just end up tagged with a different `kind` in the payload.
+
+Re-running this on a folder you've already ingested is safe: each chunk's
+Qdrant point ID is derived deterministically from (source path, chunk
+index), not randomly generated, so upserting the same file again overwrites
+the same points instead of duplicating them -- add one new file and
+re-ingest the whole data/ folder, nothing already indexed gets duplicated.
+Editing a file's content updates its existing points in place the next time
+you ingest. One known limitation: if an edit *shrinks* a file enough to
+produce fewer chunks than before, the extra old chunks (now orphaned) stay
+in Qdrant rather than being cleaned up -- rebuilding the collection
+(`docker compose down -v && docker compose up -d qdrant`, then re-ingest)
+is the way to fully reconcile if that happens often enough to matter.
 """
 
 from __future__ import annotations
@@ -31,6 +43,18 @@ from rag_core.vector_store import QdrantVectorStore
 logger = logging.getLogger(__name__)
 
 TEXT_EXTENSIONS = {".txt", ".md"}
+
+# Fixed on purpose -- do not regenerate. uuid5(NAMESPACE, name) is only
+# deterministic across runs if NAMESPACE itself never changes; changing it
+# would silently re-randomize every chunk ID and duplicate your whole
+# collection on the next ingest.
+_CHUNK_ID_NAMESPACE = uuid.UUID("45bbec77-10d0-47bb-93a4-17bbe01d564e")
+
+
+def _stable_chunk_id(source: str, chunk_index: int) -> str:
+    """A Qdrant point ID that's the same every time for the same chunk of
+    the same file, so upserting is idempotent instead of ever-growing."""
+    return str(uuid.uuid5(_CHUNK_ID_NAMESPACE, f"{source}::{chunk_index}"))
 
 
 def ingest_folder(folder: Path) -> int:
@@ -95,8 +119,8 @@ def ingest_folder(folder: Path) -> int:
     try:
         vectors = embedder.embed(texts)
         store.ensure_collection(vector_size=len(vectors[0]))
-        ids = [str(uuid.uuid4()) for _ in all_chunks]
         payloads = [c[1] for c in all_chunks]
+        ids = [_stable_chunk_id(p["source"], p["chunk_index"]) for p in payloads]
         store.upsert(ids=ids, vectors=vectors, payloads=payloads)
     except RagCoreError:
         logger.exception("Ingestion failed while embedding or writing to Qdrant")
