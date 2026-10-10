@@ -220,5 +220,10 @@ __marimo__/
 # rag_system project-specific
 .qdrant_storage/
 .ollama_data/
+# data/ stays ignored by default (personal recordings, scratch notes, large
+# source files you don't want in git history) except curated, versioned
+# interview-prep content, which is meant to be shared/reused.
 data/*
 !data/.gitkeep
+!data/interview-prep/
+!data/interview-prep/**
