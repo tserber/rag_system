@@ -5,7 +5,15 @@ description = "A retrieval (and optional generation) system over Qdrant, with a 
 requires-python = ">=3.11"
 dependencies = [
     "qdrant-client>=1.9",
-    "sentence-transformers>=3.0",
+    # Capped below 6.0: sentence-transformers>=6 pulls in transformers>=5,
+    # and every transformers 5.x release available here has a genuine
+    # packaging bug (a bare `nn.Module` reference in
+    # transformers/integrations/accelerate.py with no `import torch.nn as nn`
+    # and no `from __future__ import annotations`, so loading the module
+    # raises NameError before any model even gets touched). Pin stays until
+    # a transformers 5.x release actually fixes that import.
+    "sentence-transformers>=3.0,<6.0",
+    "transformers>=4.30,<5.0",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "aiogram>=3.4",
@@ -16,7 +24,13 @@ dependencies = [
     # faster-whisper/sounddevice which stay lazy-imported and optional.
     # Already pulled in transitively by sentence-transformers, but declared
     # explicitly since rag_core now has a direct hard dependency on it.
-    "numpy>=1.24",
+    # Capped below 2.0: torch 2.2.x (the newest available here) was built
+    # against numpy 1.x's C ABI and raises "Numpy is not available" at
+    # encode() time under numpy 2.x -- see scipy/scikit-learn pins below,
+    # which exist only to stay compatible with this same numpy cap.
+    "numpy>=1.24,<2.0",
+    "scipy<1.13",
+    "scikit-learn<1.5",
 ]
 
 [project.optional-dependencies]

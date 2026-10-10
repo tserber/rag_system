@@ -1,15 +1,15 @@
-"""Load .txt/.md files (and audio files, transcribed first) from a folder,
-chunk them, embed them, upsert to Qdrant.
+"""Chunk, embed, and index files from a folder into Qdrant, using whichever
+IngestStrategy (see rag_core.ingest_strategies) claims each file.
 
 Usage:
     python -m rag_core.ingest ./data
 
 Files are organized as data/<sphere>/<technology>/*.{md,txt,mp3,wav,...} so
 sphere and technology metadata get inferred automatically -- see
-rag_core.metadata. Audio files (see rag_core.transcription.AUDIO_EXTENSIONS)
-are transcribed to text before chunking; everything downstream of that
-(chunking, embedding, metadata, upsert) is identical for text and audio
-sources, they just end up tagged with a different `kind` in the payload.
+rag_core.metadata. Source-type handling (text file vs. audio file, and
+whatever gets added later) lives entirely in rag_core.ingest_strategies;
+Ingester just picks a strategy per file and runs the same chunk/embed/
+upsert pipeline regardless of what produced the text.
 
 Re-running this on a folder you've already ingested is safe: each chunk's
 Qdrant point ID is derived deterministically from (source path, chunk
@@ -32,17 +32,20 @@ import uuid
 from pathlib import Path
 
 from rag_core.chunking import chunk_text
-from rag_core.config import get_settings
-from rag_core.embeddings import SentenceTransformersEmbedder
+from rag_core.config import Settings, get_settings
+from rag_core.embeddings import Embedder, SentenceTransformersEmbedder
 from rag_core.errors import RagCoreError
+from rag_core.ingest_strategies import (
+    AudioFileStrategy,
+    IngestStrategy,
+    TextFileStrategy,
+)
 from rag_core.logging_config import configure_logging
 from rag_core.metadata import ChunkMetadata, infer_sphere_and_technology
-from rag_core.transcription import AUDIO_EXTENSIONS, FasterWhisperTranscriber
-from rag_core.vector_store import QdrantVectorStore
+from rag_core.transcription import FasterWhisperTranscriber
+from rag_core.vector_store import QdrantVectorStore, VectorStore
 
 logger = logging.getLogger(__name__)
-
-TEXT_EXTENSIONS = {".txt", ".md"}
 
 # Fixed on purpose -- do not regenerate. uuid5(NAMESPACE, name) is only
 # deterministic across runs if NAMESPACE itself never changes; changing it
@@ -57,79 +60,119 @@ def _stable_chunk_id(source: str, chunk_index: int) -> str:
     return str(uuid.uuid5(_CHUNK_ID_NAMESPACE, f"{source}::{chunk_index}"))
 
 
-def ingest_folder(folder: Path) -> int:
-    settings = get_settings()
-    embedder = SentenceTransformersEmbedder(settings.embedding_model)
-    store = QdrantVectorStore(settings)
-    # Built lazily (see below) so machines with no audio files in `folder`
-    # never need the optional `faster-whisper` dependency installed.
-    transcriber: FasterWhisperTranscriber | None = None
+class Ingester:
+    """Orchestrates ingestion: walk a folder, pick an IngestStrategy per
+    file, chunk/embed/upsert the result. Owns no source-type-specific
+    logic itself -- see rag_core.ingest_strategies for that -- so adding a
+    new source type never means touching this class.
 
-    files = [p for p in folder.rglob("*") if p.suffix.lower() in TEXT_EXTENSIONS | AUDIO_EXTENSIONS]
-    if not files:
-        logger.warning("No .txt/.md/audio files found under %s", folder)
-        return 0
+    All dependencies are optional and default to the configured
+    implementations, same pattern as RagPipeline, so tests can swap in
+    fakes and a future caller can swap in a different embedder/vector
+    store or a custom strategy list (e.g. PDF-only ingestion) without
+    subclassing anything.
+    """
 
-    all_chunks: list[tuple[str, dict]] = []  # (text, metadata payload)
-    for path in files:
-        try:
-            sphere, technology = infer_sphere_and_technology(path, folder)
-            is_audio = path.suffix.lower() in AUDIO_EXTENSIONS
-            if is_audio:
-                if transcriber is None:
-                    transcriber = FasterWhisperTranscriber(
-                        model_size=settings.whisper_model_size,
-                        device=settings.whisper_device,
-                        compute_type=settings.whisper_compute_type,
-                    )
-                logger.info("Transcribing %s ...", path)
-                content = transcriber.transcribe(path)
-                kind = "audio_transcript"
-            else:
-                content = path.read_text(encoding="utf-8", errors="ignore")
-                kind = "text"
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        strategies: list[IngestStrategy] | None = None,
+        embedder: Embedder | None = None,
+        vector_store: VectorStore | None = None,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._strategies = strategies if strategies is not None else self._default_strategies()
+        self._embedder = embedder or SentenceTransformersEmbedder(self._settings.embedding_model)
+        self._vector_store = vector_store or QdrantVectorStore(self._settings)
 
-            for chunk in chunk_text(content, settings.chunk_size_chars, settings.chunk_overlap_chars):
-                metadata = ChunkMetadata(
-                    text=chunk.text,
-                    source=str(path),
-                    chunk_index=chunk.index,
-                    sphere=sphere,
-                    technology=technology,
-                    kind=kind,
+    def _default_strategies(self) -> list[IngestStrategy]:
+        settings = self._settings
+        return [
+            TextFileStrategy(),
+            AudioFileStrategy(
+                lambda: FasterWhisperTranscriber(
+                    model_size=settings.whisper_model_size,
+                    device=settings.whisper_device,
+                    compute_type=settings.whisper_compute_type,
                 )
-                all_chunks.append((chunk.text, metadata.to_payload()))
-        except OSError:
-            # A single unreadable file (permissions, encoding surprise, ...)
-            # shouldn't abort ingesting everything else.
-            logger.exception("Skipping unreadable file: %s", path)
-            continue
+            ),
+        ]
+
+    def _strategy_for(self, path: Path) -> IngestStrategy | None:
+        for strategy in self._strategies:
+            if strategy.can_handle(path):
+                return strategy
+        return None
+
+    def ingest_folder(self, folder: Path) -> int:
+        files = [p for p in folder.rglob("*") if p.is_file()]
+        if not files:
+            logger.warning("No files found under %s", folder)
+            return 0
+
+        all_chunks: list[tuple[str, dict]] = []  # (text, metadata payload)
+        matched_files = 0
+        for path in files:
+            strategy = self._strategy_for(path)
+            if strategy is None:
+                continue  # not an error -- .DS_Store, a README, anything no strategy claims
+            matched_files += 1
+
+            try:
+                sphere, technology = infer_sphere_and_technology(path, folder)
+                logger.info("Extracting %s via %s ...", path, type(strategy).__name__)
+                content = strategy.extract_text(path)
+
+                for chunk in chunk_text(content, self._settings.chunk_size_chars, self._settings.chunk_overlap_chars):
+                    metadata = ChunkMetadata(
+                        text=chunk.text,
+                        source=str(path),
+                        chunk_index=chunk.index,
+                        sphere=sphere,
+                        technology=technology,
+                        kind=strategy.kind,
+                    )
+                    all_chunks.append((chunk.text, metadata.to_payload()))
+            except OSError:
+                # A single unreadable file (permissions, encoding surprise, ...)
+                # shouldn't abort ingesting everything else.
+                logger.exception("Skipping unreadable file: %s", path)
+                continue
+            except RagCoreError:
+                # A single file that fails to process (bad audio, missing
+                # faster-whisper) shouldn't abort ingesting everything else
+                # either -- log it and move on, same reasoning as OSError above.
+                logger.exception("Skipping file that failed to process: %s", path)
+                continue
+
+        if not all_chunks:
+            logger.warning("Files were found but produced no chunks (nothing matched a strategy, or empty content?).")
+            return 0
+
+        texts = [c[0] for c in all_chunks]
+        try:
+            vectors = self._embedder.embed(texts)
+            self._vector_store.ensure_collection(vector_size=len(vectors[0]))
+            payloads = [c[1] for c in all_chunks]
+            ids = [_stable_chunk_id(p["source"], p["chunk_index"]) for p in payloads]
+            self._vector_store.upsert(ids=ids, vectors=vectors, payloads=payloads)
         except RagCoreError:
-            # A single file that fails to transcribe (bad audio, missing
-            # faster-whisper) shouldn't abort ingesting everything else
-            # either -- log it and move on, same reasoning as OSError above.
-            logger.exception("Skipping file that failed to process: %s", path)
-            continue
+            logger.exception("Ingestion failed while embedding or writing to Qdrant")
+            raise
 
-    if not all_chunks:
-        logger.warning("Files were found but produced no chunks (empty content?).")
-        return 0
+        logger.info(
+            "Ingested %d chunks from %d files into '%s'.",
+            len(all_chunks),
+            matched_files,
+            self._settings.qdrant_collection,
+        )
+        return len(all_chunks)
 
-    texts = [c[0] for c in all_chunks]
-    try:
-        vectors = embedder.embed(texts)
-        store.ensure_collection(vector_size=len(vectors[0]))
-        payloads = [c[1] for c in all_chunks]
-        ids = [_stable_chunk_id(p["source"], p["chunk_index"]) for p in payloads]
-        store.upsert(ids=ids, vectors=vectors, payloads=payloads)
-    except RagCoreError:
-        logger.exception("Ingestion failed while embedding or writing to Qdrant")
-        raise
 
-    logger.info(
-        "Ingested %d chunks from %d files into '%s'.", len(all_chunks), len(files), settings.qdrant_collection
-    )
-    return len(all_chunks)
+def ingest_folder(folder: Path) -> int:
+    """Module-level convenience wrapper around Ingester(), for the CLI and
+    for callers that don't need to customize strategies/embedder/store."""
+    return Ingester().ingest_folder(folder)
 
 
 def main() -> None:

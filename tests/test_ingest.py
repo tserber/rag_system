@@ -6,8 +6,10 @@ idempotent (same chunk -> same Qdrant point ID every time), not duplicated.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import rag_core.ingest as ingest_module
-from rag_core.ingest import _stable_chunk_id, ingest_folder
+from rag_core.ingest import Ingester, _stable_chunk_id, ingest_folder
 
 
 class FakeEmbedder:
@@ -100,3 +102,57 @@ def test_editing_a_file_keeps_the_same_ids_for_its_chunks(tmp_path, monkeypatch)
     assert first_ids == second_ids  # same (source, chunk_index) -> updates in place
     # but the payload text actually changed
     assert stores[0].upserts[0]["payloads"][0]["text"] != stores[1].upserts[0]["payloads"][0]["text"]
+
+
+class FakeStrategy:
+    """A custom, test-only ingest strategy -- proves Ingester works with
+    whatever strategy list it's given, not just the two built-in ones."""
+
+    kind = "fake"
+
+    def __init__(self, extension: str, text: str) -> None:
+        self._extension = extension
+        self._text = text
+
+    def can_handle(self, path: Path) -> bool:
+        return path.suffix == self._extension
+
+    def extract_text(self, path: Path) -> str:
+        return self._text
+
+
+def test_ingester_accepts_a_custom_strategy_list(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "weird.xyz").write_text("ignored by the fake strategy -- it returns fixed text")
+
+    store = FakeVectorStore(settings=None)
+    ingester = Ingester(
+        strategies=[FakeStrategy(extension=".xyz", text="hello from a custom strategy")],
+        embedder=FakeEmbedder(model_name=""),
+        vector_store=store,
+    )
+
+    count = ingester.ingest_folder(data_dir)
+
+    assert count == 1
+    assert store.upserts[0]["payloads"][0]["text"] == "hello from a custom strategy"
+    assert store.upserts[0]["payloads"][0]["kind"] == "fake"
+
+
+def test_ingester_skips_files_no_strategy_claims(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "unrelated.bin").write_bytes(b"\x00\x01")  # no strategy handles .bin
+
+    store = FakeVectorStore(settings=None)
+    ingester = Ingester(
+        strategies=[FakeStrategy(extension=".xyz", text="irrelevant")],
+        embedder=FakeEmbedder(model_name=""),
+        vector_store=store,
+    )
+
+    count = ingester.ingest_folder(data_dir)
+
+    assert count == 0
+    assert store.upserts == []  # never even reached the embed/upsert step
