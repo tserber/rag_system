@@ -29,8 +29,74 @@ capability without having to read every module first.
 | `ingest_file` (desktop app) | Drag a single file onto a small window (or click to browse) to index it, with no terminal needed. See [Desktop app](#desktop-app) below. | One file, dropped or picked via a file dialog. | `python -m interfaces.desktop_app.main`, or the packaged executable. |
 
 Every row above is one capability of `rag_core.RagPipeline` or its ingestion
-CLI — see [`agents.md`](./agents.md) for the full architecture these plug
+CLI. See [`agents.md`](./agents.md) for the full architecture these plug
 into, and the module boundaries that keep each one swappable.
+
+## How to use
+
+The short version of the whole workflow: get your content in, then ask it
+questions. Everything below assumes the one-time setup from
+[Quickstart](#quickstart) is already done (dependencies installed, `.env`
+copied, Qdrant running).
+
+### 1. Add your content
+
+Put text files, markdown notes, or audio recordings under `data/`,
+organized as `data/<sphere>/<technology>/*.ext` if you want them tagged
+for filtered search later (plain files directly in `data/` work too, they
+just will not be filterable by sphere or technology).
+
+Then index them:
+
+```bash
+python -m rag_core.ingest ./data
+```
+
+Re-running this later, after adding or editing files, is always safe. It
+updates existing content in place instead of duplicating it. See
+[Audio transcription](#audio-transcription) if any of your files are
+recordings rather than text.
+
+Prefer a window you can drag a single file onto instead of a terminal
+command? See [Desktop app](#desktop-app) below. Same result, one file at a
+time.
+
+### 2. Ask it questions
+
+Pick whichever fits how you want to use it:
+
+- **Telegram bot**, for asking questions from your phone or desktop chat
+  client:
+  ```bash
+  python -m interfaces.telegram_bot.main
+  ```
+  Then message the bot like you would any chat.
+
+- **HTTP API**, for calling it from another program or script:
+  ```bash
+  uvicorn interfaces.api.app:app --reload
+  ```
+  Then `POST` a query to it, same shape as the Telegram bot's request.
+
+- **Live microphone listening**, for continuous, hands-free use (for
+  example, having your own notes answer questions as they come up during a
+  real conversation). See [Live listening](#live-listening) below for the
+  full picture, including how it decides when a question is "done" being
+  asked:
+  ```bash
+  python -m interfaces.live_listener.main
+  ```
+
+All three answer from the exact same indexed content and the exact same
+retrieval logic. They are just different front doors into the same system,
+so indexing once in step 1 is enough no matter which of these you use
+afterward.
+
+### 3. Narrow results, if you tagged your content (optional)
+
+If you organized `data/` into `<sphere>/<technology>` folders in step 1,
+both the Telegram bot and the API accept `sphere` and `technology` filters
+to search only part of what is indexed instead of everything at once.
 
 ## Why local-first, with AWS as a documented option
 
