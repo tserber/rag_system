@@ -26,6 +26,7 @@ capability without having to read every module first.
 | `filtered_retrieval` | Narrow results to a specific `sphere` and/or `technology` instead of searching everything. | `sphere` / `technology` query parameters, matched against each chunk's metadata. | Built into `query` above — pass the filters through the bot/API. |
 | `health_check` | Report whether Qdrant (and Ollama, if generation is on) are actually reachable. | None. | See `rag_core.healthcheck` / the bot's health command. |
 | `live_listen` | Listen to a microphone continuously, detect each spoken question, and answer it against your indexed documents — with an early answer offered before the question even finishes. See [Live listening](#live-listening) below. | A live microphone feed. | `python -m interfaces.live_listener.main` |
+| `ingest_file` (desktop app) | Drag a single file onto a small window (or click to browse) to index it, with no terminal needed. See [Desktop app](#desktop-app) below. | One file, dropped or picked via a file dialog. | `python -m interfaces.desktop_app.main`, or the packaged executable. |
 
 Every row above is one capability of `rag_core.RagPipeline` or its ingestion
 CLI — see [`agents.md`](./agents.md) for the full architecture these plug
@@ -205,6 +206,57 @@ threshold, not a trained model) — good enough to find pauses between
 questions without adding a new dependency; swapping in a more accurate VAD
 later is a one-file change, nothing else in the live-listening path needs
 to know.
+
+## Desktop app
+
+For adding a file to the index without opening a terminal, there's a small
+window you can drag a file onto (or click to pick one via a normal file
+dialog). It's built on `rag_core.Ingester.ingest_file()`, the same
+ingestion code the CLI and the other interfaces use, just handed one file
+at a time instead of a whole folder.
+
+```bash
+pip install -e ".[desktop]"
+python -m interfaces.desktop_app.main
+```
+
+The window stays responsive while a file is being embedded. Ingestion runs
+on a background thread, and the result (chunk count, or an error) gets
+reported back to the window once it's done.
+
+Drag-and-drop needs the optional `tkinterdnd2` package (included in the
+`[desktop]` extra). If it isn't available for some reason, the app still
+opens and still works: the drop zone just falls back to click-to-browse
+instead of the whole app breaking over one optional dependency.
+
+### Packaging it as a single executable
+
+```bash
+pip install -e ".[desktop]"
+pyinstaller --onefile --windowed --name rag-system-ingest \
+    --paths src \
+    src/interfaces/desktop_app/main.py
+```
+
+This produces one file at `dist/rag-system-ingest` (`.exe` on Windows) that
+runs standalone, with no Python install, no venv, and nothing else needed
+on the machine it's copied to. It bundles the embedding model's
+dependencies (torch, sentence-transformers), so the build itself takes a
+few minutes and the resulting executable is large (several hundred MB).
+That's the actual cost of "double-click to ingest a file," not a packaging
+mistake.
+
+A few things worth knowing before you ship the built executable around:
+- It still needs network access to the Qdrant instance configured in
+  `.env` (local Docker Qdrant, or Qdrant Cloud). Packaging the app doesn't
+  package a database.
+- On macOS, Gatekeeper will flag an unsigned `--onefile` build the first
+  time it's opened by double-click; right-click → Open past that once, or
+  sign it with your own Apple Developer certificate for distribution beyond
+  your own machine.
+- Rebuild it after changing anything under `rag_core/` or
+  `interfaces/desktop_app/`. PyInstaller bundles a snapshot of the code
+  and doesn't pick up later edits automatically.
 
 ## Quickstart
 

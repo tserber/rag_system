@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import rag_core.ingest as ingest_module
 from rag_core.ingest import Ingester, _stable_chunk_id, ingest_folder
 
@@ -156,3 +158,58 @@ def test_ingester_skips_files_no_strategy_claims(tmp_path):
 
     assert count == 0
     assert store.upserts == []  # never even reached the embed/upsert step
+
+
+def test_ingest_file_indexes_a_single_file(tmp_path):
+    path = tmp_path / "notes.md"
+    path.write_text("Standalone note about Qdrant filtering.")
+
+    store = FakeVectorStore(settings=None)
+    ingester = Ingester(
+        strategies=[FakeStrategy(extension=".md", text="Standalone note about Qdrant filtering.")],
+        embedder=FakeEmbedder(model_name=""),
+        vector_store=store,
+    )
+
+    count = ingester.ingest_file(path)
+
+    assert count == 1
+    assert store.upserts[0]["payloads"][0]["source"] == str(path)
+    assert store.upserts[0]["payloads"][0]["text"] == "Standalone note about Qdrant filtering."
+
+
+def test_ingest_file_raises_on_unsupported_type(tmp_path):
+    path = tmp_path / "unknown.bin"
+    path.write_bytes(b"\x00\x01")
+
+    ingester = Ingester(
+        strategies=[FakeStrategy(extension=".xyz", text="irrelevant")],
+        embedder=FakeEmbedder(model_name=""),
+        vector_store=FakeVectorStore(settings=None),
+    )
+
+    with pytest.raises(ValueError, match="unsupported file type"):
+        ingester.ingest_file(path)
+
+
+def test_ingest_file_reuses_the_same_stable_id_as_ingest_folder(tmp_path):
+    """ingest_file and ingest_folder must agree on the ID for the same
+    chunk of the same file, or dropping a file onto the desktop app and
+    later re-ingesting the whole data/ folder would create a duplicate
+    instead of updating the same point."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    path = data_dir / "notes.md"
+    path.write_text("shared content")
+
+    strategy = FakeStrategy(extension=".md", text="shared content")
+
+    folder_store = FakeVectorStore(settings=None)
+    Ingester(strategies=[strategy], embedder=FakeEmbedder(model_name=""), vector_store=folder_store).ingest_folder(
+        data_dir
+    )
+
+    file_store = FakeVectorStore(settings=None)
+    Ingester(strategies=[strategy], embedder=FakeEmbedder(model_name=""), vector_store=file_store).ingest_file(path)
+
+    assert folder_store.upserts[0]["ids"] == file_store.upserts[0]["ids"]

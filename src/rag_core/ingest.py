@@ -104,6 +104,33 @@ class Ingester:
                 return strategy
         return None
 
+    def _chunks_for_file(self, path: Path, root: Path) -> list[tuple[str, dict]]:
+        """Extract + chunk one file into (text, metadata payload) pairs.
+        Shared by ingest_folder (which batches many files into one embed
+        call) and ingest_file (which embeds just this one) -- the part
+        worth keeping DRY is picking a strategy and building metadata, not
+        how the caller batches the embed/upsert step."""
+        strategy = self._strategy_for(path)
+        if strategy is None:
+            return []
+
+        sphere, technology = infer_sphere_and_technology(path, root)
+        logger.info("Extracting %s via %s ...", path, type(strategy).__name__)
+        content = strategy.extract_text(path)
+
+        chunks: list[tuple[str, dict]] = []
+        for chunk in chunk_text(content, self._settings.chunk_size_chars, self._settings.chunk_overlap_chars):
+            metadata = ChunkMetadata(
+                text=chunk.text,
+                source=str(path),
+                chunk_index=chunk.index,
+                sphere=sphere,
+                technology=technology,
+                kind=strategy.kind,
+            )
+            chunks.append((chunk.text, metadata.to_payload()))
+        return chunks
+
     def ingest_folder(self, folder: Path) -> int:
         files = [p for p in folder.rglob("*") if p.is_file()]
         if not files:
@@ -113,26 +140,11 @@ class Ingester:
         all_chunks: list[tuple[str, dict]] = []  # (text, metadata payload)
         matched_files = 0
         for path in files:
-            strategy = self._strategy_for(path)
-            if strategy is None:
+            if self._strategy_for(path) is None:
                 continue  # not an error -- .DS_Store, a README, anything no strategy claims
             matched_files += 1
-
             try:
-                sphere, technology = infer_sphere_and_technology(path, folder)
-                logger.info("Extracting %s via %s ...", path, type(strategy).__name__)
-                content = strategy.extract_text(path)
-
-                for chunk in chunk_text(content, self._settings.chunk_size_chars, self._settings.chunk_overlap_chars):
-                    metadata = ChunkMetadata(
-                        text=chunk.text,
-                        source=str(path),
-                        chunk_index=chunk.index,
-                        sphere=sphere,
-                        technology=technology,
-                        kind=strategy.kind,
-                    )
-                    all_chunks.append((chunk.text, metadata.to_payload()))
+                all_chunks.extend(self._chunks_for_file(path, folder))
             except OSError:
                 # A single unreadable file (permissions, encoding surprise, ...)
                 # shouldn't abort ingesting everything else.
@@ -149,24 +161,48 @@ class Ingester:
             logger.warning("Files were found but produced no chunks (nothing matched a strategy, or empty content?).")
             return 0
 
-        texts = [c[0] for c in all_chunks]
+        count = self._embed_and_upsert(all_chunks)
+        logger.info(
+            "Ingested %d chunks from %d files into '%s'.", count, matched_files, self._settings.qdrant_collection
+        )
+        return count
+
+    def ingest_file(self, path: Path) -> int:
+        """Ingest exactly one file -- the single-file counterpart to
+        ingest_folder, for callers (like a drag-and-drop UI) that process
+        one user-selected file at a time rather than a whole directory.
+
+        Raises ValueError if no strategy recognizes the file's type, so a
+        caller can show a clear "unsupported file" message instead of
+        silently doing nothing (ingest_folder skips unmatched files
+        silently, since skimming a whole directory for whatever it
+        recognizes is the expected behavior there; a single file a user
+        explicitly chose warrants an explicit error instead).
+        """
+        if self._strategy_for(path) is None:
+            raise ValueError(f"No ingest strategy can handle '{path.name}' (unsupported file type)")
+
+        chunks = self._chunks_for_file(path, path.parent)
+        if not chunks:
+            logger.warning("File produced no chunks (empty content?): %s", path)
+            return 0
+
+        count = self._embed_and_upsert(chunks)
+        logger.info("Ingested %d chunks from '%s' into '%s'.", count, path.name, self._settings.qdrant_collection)
+        return count
+
+    def _embed_and_upsert(self, chunks: list[tuple[str, dict]]) -> int:
+        texts = [c[0] for c in chunks]
         try:
             vectors = self._embedder.embed(texts)
             self._vector_store.ensure_collection(vector_size=len(vectors[0]))
-            payloads = [c[1] for c in all_chunks]
+            payloads = [c[1] for c in chunks]
             ids = [_stable_chunk_id(p["source"], p["chunk_index"]) for p in payloads]
             self._vector_store.upsert(ids=ids, vectors=vectors, payloads=payloads)
         except RagCoreError:
             logger.exception("Ingestion failed while embedding or writing to Qdrant")
             raise
-
-        logger.info(
-            "Ingested %d chunks from %d files into '%s'.",
-            len(all_chunks),
-            matched_files,
-            self._settings.qdrant_collection,
-        )
-        return len(all_chunks)
+        return len(chunks)
 
 
 def ingest_folder(folder: Path) -> int:

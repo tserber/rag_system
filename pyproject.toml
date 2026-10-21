@@ -51,6 +51,16 @@ live = [
     "rag-system[audio]",
     "sounddevice>=0.4",
 ]
+# Needed only to run or package the drag-and-drop desktop app
+# (interfaces/desktop_app). tkinter itself ships with Python, not pip --
+# see README's "Desktop app" section if `import tkinter` fails on your OS.
+# tkinterdnd2 is optional even within this extra: the app still runs and
+# still works without it, just falls back to click-to-browse instead of
+# true drag-and-drop (see main.py's _DND_AVAILABLE fallback).
+desktop = [
+    "tkinterdnd2>=0.3",
+    "pyinstaller>=6.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

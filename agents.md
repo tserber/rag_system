@@ -24,6 +24,10 @@ src/
     live_listener/   <- imports rag_core (incl. rag_core.live). Owns the
                         microphone (sounddevice), same way telegram_bot owns
                         aiogram and api owns FastAPI.
+    desktop_app/     <- imports rag_core (Ingester). Owns the Tk window and
+                        file dialog/drag-and-drop, same pattern again --
+                        calls Ingester().ingest_file(path) and nothing else
+                        from rag_core.
 ```
 
 `rag_core` must never import `aiogram`, `fastapi`, `django`, or anything else
